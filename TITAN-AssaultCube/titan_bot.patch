@@ -1,0 +1,184 @@
+diff --git a/config/menus_bot.cfg b/config/menus_bot.cfg
+index 83a1b20..97567ef 100644
+--- a/config/menus_bot.cfg
++++ b/config/menus_bot.cfg
+@@ -17,21 +17,27 @@ tempalias tmp_numbots 1
+ tempalias tmp_mode ""
+ tempalias tmp_botmap ""
+ tempalias tmp_isbotteammode 0
++tempalias tmp_titanmatch 0
+ 
+ // add bots
+ const startbotmatch [
+-  if ($tmp_isbotteammode) [ // team botmode
+-    tempalias numrvsf (div $tmp_numbots 2)
+-    tempalias numcla (div $tmp_numbots 2)
+-    if (= (player1 team) 0) [ -= numcla 1 ] [
+-      if (= (player1 team) 1) [ -= numrvsf 1 ]
++  if $tmp_titanmatch [
++    addtitanbot
++  ] [
++    if ($tmp_isbotteammode) [ // team botmode
++      tempalias numrvsf (div $tmp_numbots 2)
++      tempalias numcla (div $tmp_numbots 2)
++      if (= (player1 team) 0) [ -= numcla 1 ] [
++        if (= (player1 team) 1) [ -= numrvsf 1 ]
++      ]
++      if (&& (= $numrvsf $numcla) $needsswitch) [ -= numrvsf 1 ]
++      addnbot $numrvsf RVSF $tmp_botskill
++      addnbot $numcla CLA $tmp_botskill
++    ] [ // bot FFA
++      addnbot $tmp_numbots random $tmp_botskill
+     ]
+-    if (&& (= $numrvsf $numcla) $needsswitch) [ -= numrvsf 1 ]
+-    addnbot $numrvsf RVSF $tmp_botskill
+-    addnbot $numcla CLA $tmp_botskill
+-  ] [ // bot FFA
+-    addnbot $tmp_numbots random $tmp_botskill
+   ]
++  tmp_titanmatch = 0
+ ]
+ 
+ const preparebotmatch [
+@@ -75,13 +81,14 @@ const emptymap [
+ newmenu singleplayer
+ 
+ // teamplay not mature yet
+-menuitem "Bot Team Deathmatch"         [ tmp_mode = 7; tmp_isbotteammode = 1; showmenu botskill ]
+-menuitem "Bot Deathmatch"              [ tmp_mode = 8; tmp_isbotteammode = 0; showmenu botskill ]
+-menuitem "Bot One Shot, One Kill"      [ tmp_mode = 12; tmp_isbotteammode = 0; showmenu botskill ]
+-menuitem "Bot Pistol Frenzy"           [ tmp_mode = 18; tmp_isbotteammode = 0; showmenu botskill ]
+-menuitem "Bot Last Swiss Standing"     [ tmp_mode = 19; tmp_isbotteammode = 0; showmenu botskill ]
+-menuitem "Bot Team Survivor"           [ tmp_mode = 20; tmp_isbotteammode = 1; showmenu botskill ]
+-menuitem "Bot Team One Shot, One Kill" [ tmp_mode = 21; tmp_isbotteammode = 1; showmenu botskill ]
++menuitem "Bot Team Deathmatch"         [ tmp_titanmatch = 0; tmp_mode = 7; tmp_isbotteammode = 1; showmenu botskill ]
++menuitem "Bot Deathmatch"              [ tmp_titanmatch = 0; tmp_mode = 8; tmp_isbotteammode = 0; showmenu botskill ]
++menuitem "TITAN Deathmatch (local)"    [ tmp_mode = 8; tmp_isbotteammode = 0; tmp_titanmatch = 1; showmenu botmaps ]
++menuitem "Bot One Shot, One Kill"      [ tmp_titanmatch = 0; tmp_mode = 12; tmp_isbotteammode = 0; showmenu botskill ]
++menuitem "Bot Pistol Frenzy"           [ tmp_titanmatch = 0; tmp_mode = 18; tmp_isbotteammode = 0; showmenu botskill ]
++menuitem "Bot Last Swiss Standing"     [ tmp_titanmatch = 0; tmp_mode = 19; tmp_isbotteammode = 0; showmenu botskill ]
++menuitem "Bot Team Survivor"           [ tmp_titanmatch = 0; tmp_mode = 20; tmp_isbotteammode = 1; showmenu botskill ]
++menuitem "Bot Team One Shot, One Kill" [ tmp_titanmatch = 0; tmp_mode = 21; tmp_isbotteammode = 1; showmenu botskill ]
+ menuitem "Bot Survival"                [ load_survival ; showmenu [Survival Mode] ]
+ menuitem "" -1
+ menuitem "Bot settings..." [ showmenu [Bot settings] ]
+diff --git a/source/src/bot/bot.h b/source/src/bot/bot.h
+index 86813e7..1e7a7c2 100644
+--- a/source/src/bot/bot.h
++++ b/source/src/bot/bot.h
+@@ -300,6 +300,7 @@ public:
+      friend class CWaypointClass;
+ 
+      bool m_bSendC2SInit;
++     bool m_bTitan; // Custom TITAN tactics; enabled only for the local TITAN bot.
+ 
+      virtual ~CBot(void);
+ 
+diff --git a/source/src/bot/bot_ai.cpp b/source/src/bot/bot_ai.cpp
+index 0d2c76a..0c1c72a 100644
+--- a/source/src/bot/bot_ai.cpp
++++ b/source/src/bot/bot_ai.cpp
+@@ -779,7 +779,27 @@ void CBot::MainAI()
+         }
+ 
+         m_eCurrentBotState = STATE_ENEMY;
+-        if (!CheckJump())
++        bool bTitanRetreat = m_bTitan && m_pMyEnt->health <= 30 &&
++                             m_pMyEnt->enemy->health >= m_pMyEnt->health &&
++                             GetDistance(m_pMyEnt->o, m_pMyEnt->enemy->o) < 28.0f;
++        bool bTitanPress = m_bTitan &&
++                           m_pMyEnt->health > m_pMyEnt->enemy->health + 20 &&
++                           GetDistance(m_pMyEnt->o, m_pMyEnt->enemy->o) < 18.0f;
++        if (bTitanRetreat)
++        {
++            // Create space when critically hurt, while keeping the enemy in view.
++            m_iMoveDir = ((lastmillis / 650) % 2) ? BACKWARD | LEFT : BACKWARD | RIGHT;
++            SetMoveDir(m_iMoveDir, false);
++            m_pMyEnt->trycrouch = true;
++        }
++        else if (bTitanPress)
++        {
++            // Press a low-health opponent and vary the approach to avoid a straight line.
++            m_iMoveDir = ((lastmillis / 500) % 2) ? FORWARD | LEFT : FORWARD | RIGHT;
++            SetMoveDir(m_iMoveDir, false);
++            if ((lastmillis % 1300) < 90) m_pMyEnt->jumpnext = true;
++        }
++        else if (!CheckJump())
+             DoCombatNav();
+     }
+     else if (CheckHunt() && HuntEnemy())
+diff --git a/source/src/bot/botmanager.cpp b/source/src/bot/botmanager.cpp
+index 7f65997..69530ea 100644
+--- a/source/src/bot/botmanager.cpp
++++ b/source/src/bot/botmanager.cpp
+@@ -886,6 +886,7 @@ botent *CBotManager::CreateBot(const char *team, const char *skill, const char *
+     m->pBot->m_pMyEnt = m;
+     m->pBot->m_iLastBotUpdate = 0;
+     m->pBot->m_bSendC2SInit = false;
++    m->pBot->m_bTitan = false;
+ 
+     if (name && *name) copystring(m->name, name, 16);
+     else copystring(m->name, BotManager.GetBotName(), 16);
+@@ -939,6 +940,20 @@ void addbot(char *arg1, char *arg2, char *arg3)
+ }
+ COMMAND(addbot, "sss");
+ 
++void addtitanbot()
++{
++    if(!botmode()) return;
++    botent *b = BotManager.CreateBot("random", "best", "TITAN");
++    if (!b || !b->pBot)
++    {
++        conoutf("Error: Couldn't create TITAN bot!");
++        return;
++    }
++    b->pBot->m_bTitan = true;
++    conoutf("TITAN connected to this local bot match.");
++}
++COMMAND(addtitanbot, "");
++
+ void addnbot(char *arg1, char *arg2, char *arg3)
+ {
+     if(!botmode()) return;
+diff --git a/source/src/renderhud.cpp b/source/src/renderhud.cpp
+index 018bd26..8f996cc 100644
+--- a/source/src/renderhud.cpp
++++ b/source/src/renderhud.cpp
+@@ -515,11 +515,13 @@ void drawradar_showmap(playerent *p, int w, int h)
+         playerent *pl = players[i];
+         if(!pl || pl == p || !team_isactive(pl->team)) continue;
+         if(OUTBORD(pl->o.x, pl->o.y)) continue;
++        bool titanbot = m_botmode && pl->type == ENT_BOT && !strcmp(pl->name, "TITAN");
+         int pl_baseteam = team_base(pl->team);
+-        if(p->team < TEAM_SPECT && ((m_teammode && !isteam(p_baseteam, pl_baseteam)) || (!m_teammode && !(spect3rd && d == pl)))) continue;
+-        if(p->team == TEAM_SPECT && !(spect3rd && (isteam(p_baseteam, pl_baseteam) || d == pl))) continue;
++        if(!titanbot && p->team < TEAM_SPECT && ((m_teammode && !isteam(p_baseteam, pl_baseteam)) || (!m_teammode && !(spect3rd && d == pl)))) continue;
++        if(!titanbot && p->team == TEAM_SPECT && !(spect3rd && (isteam(p_baseteam, pl_baseteam) || d == pl))) continue;
+         vec rtmp = vec(pl->o).sub(mdd).mul(coordtrans);
+-        drawradarent(rtmp.x, rtmp.y, pl->yaw, pl->state==CS_ALIVE ? (isattacking(pl) ? 2 : 0) : 1, spect3rd && d == pl ? 2 : pl_baseteam, iconsize, isattacking(pl), "%s", colorname(pl));
++        if(titanbot) drawradarent(rtmp.x, rtmp.y, pl->yaw, 2, 3, iconsize*1.35f, true, "%s", "TITAN");
++        else drawradarent(rtmp.x, rtmp.y, pl->yaw, pl->state==CS_ALIVE ? (isattacking(pl) ? 2 : 0) : 1, spect3rd && d == pl ? 2 : pl_baseteam, iconsize, isattacking(pl), "%s", colorname(pl));
+     }
+     if(m_flags_)
+     {
+@@ -604,15 +606,17 @@ void drawradar_vicinity(playerent *p, int w, int h)
+         playerent *pl = players[i];
+         if(!pl || pl == p || !team_isactive(pl->team)) continue;
+         if(OUTBORD(pl->o.x, pl->o.y)) continue;
++        bool titanbot = m_botmode && pl->type == ENT_BOT && !strcmp(pl->name, "TITAN");
+         int pl_baseteam = team_base(pl->team);
+-        if(p->team < TEAM_SPECT && ((m_teammode && !isteam(p_baseteam, pl_baseteam)) || (!m_teammode && !(spect3rd && d == pl)))) continue;
+-        if(p->team == TEAM_SPECT && !(spect3rd && (isteam(p_baseteam, pl_baseteam) || d == pl))) continue;
++        if(!titanbot && p->team < TEAM_SPECT && ((m_teammode && !isteam(p_baseteam, pl_baseteam)) || (!m_teammode && !(spect3rd && d == pl)))) continue;
++        if(!titanbot && p->team == TEAM_SPECT && !(spect3rd && (isteam(p_baseteam, pl_baseteam) || d == pl))) continue;
+         vec rtmp = vec(pl->o).sub(d->o);
+         bool isok = rtmp.sqrxy() < d2s;
+         if(isok)
+         {
+             rtmp.mul(scaled);
+-            drawradarent(rtmp.x, rtmp.y, pl->yaw, pl->state==CS_ALIVE ? (isattacking(pl) ? 2 : 0) : 1, spect3rd && d == pl ? 2 : pl_baseteam, iconsize, isattacking(pl), "%s", colorname(pl));
++            if(titanbot) drawradarent(rtmp.x, rtmp.y, pl->yaw, 2, 3, iconsize*1.35f, true, "%s", "TITAN");
++            else drawradarent(rtmp.x, rtmp.y, pl->yaw, pl->state==CS_ALIVE ? (isattacking(pl) ? 2 : 0) : 1, spect3rd && d == pl ? 2 : pl_baseteam, iconsize, isattacking(pl), "%s", colorname(pl));
+         }
+     }
+     if(m_flags_)
